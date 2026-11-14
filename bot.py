@@ -3,6 +3,7 @@ import io
 import json
 import sqlite3
 from datetime import datetime
+from contextlib import asynccontextmanager
 from PIL import Image
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, F
@@ -20,9 +21,9 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8634754860:AAGQN-LrXhnAqFhOtFk7na4fqJGSS9B0iFI")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6IodJYui6_sLhJDMa3ztv_dLz_S1B00VKjsWcTmPuePmw")
-ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8596579014"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "PUT_YOUR_GEMINI_KEY_HERE")
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "123456789"))
 
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
@@ -31,7 +32,17 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 client = genai.Client(api_key=GEMINI_API_KEY)
-app = FastAPI()
+
+# ================= دورة حياة FastAPI (Lifespan) المتوافقة مع أحدث الإصدارات =================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ما يتم تنفيذه عند تشغيل السيرفر وتفعيل الويب هوك
+    await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+    yield
+    # ما يتم تنفيذه عند إيقاف السيرفر وحذف الويب هوك
+    await bot.delete_webhook()
+
+app = FastAPI(lifespan=lifespan)
 
 # ================= حالات المحادثة (FSM) =================
 class TeacherStates(StatesGroup):
@@ -153,17 +164,15 @@ def create_arabic_word_doc(title: str, content: str) -> io.BytesIO:
 # ================= دالة تصدير عرض تقديمي PowerPoint (.pptx) =================
 def create_arabic_pptx(main_title: str, subtitle: str, slides_data: list) -> io.BytesIO:
     prs = Presentation()
-    # ضبط أبعاد الشريحة لشاشة عريضة 16:9
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     blank_layout = prs.slide_layouts[6]
 
-    # 1. شريحة الغلاف (Title Slide)
     cover_slide = prs.slides.add_slide(blank_layout)
     bg = cover_slide.background
     fill = bg.fill
     fill.solid()
-    fill.fore_color.rgb = RGBColor(15, 44, 89)  # خلفية كحلية احترافية
+    fill.fore_color.rgb = RGBColor(15, 44, 89)
 
     title_box = cover_slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(11.333), Inches(1.5))
     tf = title_box.text_frame
@@ -185,11 +194,9 @@ def create_arabic_pptx(main_title: str, subtitle: str, slides_data: list) -> io.
     sub_run.font.size = Pt(22)
     sub_run.font.color.rgb = RGBColor(218, 192, 163)
 
-    # 2. شرائح المحتوى
     for item in slides_data:
         slide = prs.slides.add_slide(blank_layout)
         
-        # عنوان الشريحة (يمين)
         header_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.6), Inches(11.7), Inches(1))
         h_tf = header_box.text_frame
         h_tf.word_wrap = True
@@ -201,7 +208,6 @@ def create_arabic_pptx(main_title: str, subtitle: str, slides_data: list) -> io.
         h_run.font.bold = True
         h_run.font.color.rgb = RGBColor(15, 44, 89)
 
-        # محتوى الشريحة (نقاط منسقة لليمين)
         body_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.8), Inches(11.7), Inches(5))
         b_tf = body_box.text_frame
         b_tf.word_wrap = True
@@ -425,7 +431,6 @@ async def process_query(message: Message, state: FSMContext):
         subject = data.get('subject')
         grade = data.get('grade')
 
-        # مسار توليد العرض التقديمي PowerPoint (.pptx)
         if service_type == "عرض تقديمي":
             prompt = (
                 f"أنشئ محتوى عرض تقديمي (7 شرائح) لمادة {subject} للصف {grade} حول درس: {message.text}. "
@@ -453,7 +458,6 @@ async def process_query(message: Message, state: FSMContext):
             await state.clear()
             return
 
-        # بقية الخدمات (تُصدر كملف Word)
         if data.get("file_uri"):
             g_file = client.files.get(name=data.get("file_uri"))
             resp = client.models.generate_content(
@@ -501,15 +505,7 @@ async def process_query(message: Message, state: FSMContext):
         await message.answer(f"خطأ: {e}")
     await state.clear()
 
-# ================= إعدادات تفعيل FastAPI و Webhook =================
-@app.on_event("startup")
-async def on_startup():
-    await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    await bot.delete_webhook()
-
+# ================= ربط وتفعيل الـ Webhook مع إطار العمل =================
 webhook_requests_handler = SimpleRequestHandler(
     dispatcher=dp,
     bot=bot,
